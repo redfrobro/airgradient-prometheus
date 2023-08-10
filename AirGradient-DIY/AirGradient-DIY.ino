@@ -3,12 +3,16 @@
  * tiny HTTP server to serve air quality metrics to Prometheus.
  */
 
-#include <AirGradient.h>
+
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
+#include <AirGradient.h>
 #include <WiFiClient.h>
 #include <Wire.h>
 #include "SSD1306Wire.h"
+#include <ArduinoMqttClient.h>
+
+
 
 // Config ----------------------------------------------------------------------
 
@@ -25,9 +29,12 @@ const char temp_display = 'C';
 #define SET_DISPLAY
 
 // WiFi and IP connection info.
-const char* ssid = "PleaseChangeMe";
-const char* password = "PleaseChangeMe";
-const int port = 9926;
+const char* ssid = "changeme";
+const char* password = "changeme";
+const int port = 80;
+const int mqttPort = 1883;
+const char broker[] = "192.168.0.123";
+const char topic[]  = "rtl_433";
 
 // Uncomment the line below to configure a static IP address.
 // #define staticip
@@ -58,6 +65,9 @@ int value_co2;
 #ifdef SET_DISPLAY
 long lastUpdate = 0;
 #endif // SET_DISPLAY
+
+WiFiClient client;
+MqttClient mqttClient(client);
 
 SSD1306Wire display(0x3c, SDA, SCL);
 ESP8266WebServer server(port);
@@ -128,6 +138,12 @@ void setup() {
 #ifdef SET_DISPLAY
   showTextRectangle("Listening To", WiFi.localIP().toString() + ":" + String(port), true);
 #endif // SET_DISPLAY
+
+if (!mqttClient.connect(broker, mqttPort)) {
+    Serial.print("MQTT connection failed! Error code = ");
+    Serial.println(mqttClient.connectError());
+  }
+
 }
 
 void loop() {
@@ -139,12 +155,15 @@ void loop() {
 
 uint8_t update() {
   uint8_t result = 0;
+
+String payload = "{\"wifi\":" + String(WiFi.RSSI()) + ",";
 #ifdef SET_PM
   {
     int value = ag.getPM2_Raw();
-    if(value)
+    if(value) {
       value_pm = value;
-    else
+      payload=payload+"\"pm025\":" + String(value_pm);
+    } else
       result += ERROR_PMS;
   }
 #endif // SET_PM
@@ -152,9 +171,10 @@ uint8_t update() {
 #ifdef SET_CO2
   {
     int value = ag.getCO2_Raw();
-    if(value > 0)
+    if(value > 0) {
       value_co2 = value;
-    else
+      payload=payload+",\"rco2\":" + String(value_co2);
+  } else
       result += ERROR_CO2;
   }
 #endif // SET_CO2
@@ -162,12 +182,26 @@ uint8_t update() {
 #ifdef SET_SHT
   {
     TMP_RH value = ag.periodicFetchData();
-    if(value.t != NULL && value.rh != NULL)
+    if(value.t != NULL && value.rh != NULL) {
       value_sht = value;
-    else
+      payload=payload+",\"temperature_C\":" + String(value_sht.t) +   ",\"humidity\":" + String(value_sht.rh);
+    } else
       result += ERROR_SHT;
   }
 #endif // SET_SHT
+// mqtt update
+
+payload = payload + ",\"id\":69,\"model\":\"co2pm25\"";
+payload=payload+"}";
+
+// send payload
+if (WiFi.status() == WL_CONNECTED){
+Serial.println(payload);
+Serial.println(topic);
+mqttClient.beginMessage(topic);
+mqttClient.print(payload);
+mqttClient.endMessage();
+}
 
 #ifdef SET_DISPLAY
   lastUpdate = millis();
